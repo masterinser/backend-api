@@ -22,6 +22,7 @@ DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_NAME = os.getenv("DB_NAME", "backend_db")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
 
 SECRET_KEY = os.getenv("SECRET_KEY", "please_change_this_secret_key")
 ALGORITHM = "HS256"
@@ -62,6 +63,7 @@ app.add_middleware(
 # ========================
 db = mysql.connector.connect(
     host=DB_HOST,
+    port=DB_PORT,
     user=DB_USER,
     password=DB_PASSWORD,
     database=DB_NAME,
