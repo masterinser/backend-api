@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 import os
 import shutil
 import uuid
+from ftplib import FTP
+import tempfile
 
 import mysql.connector
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, status
@@ -28,11 +30,19 @@ SECRET_KEY = os.getenv("SECRET_KEY", "please_change_this_secret_key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
-# ใส่โดเมน frontend จริงตอน deploy เช่น https://yourdomain.com
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS",
     "http://localhost:3000,http://localhost:5173"
 ).split(",")
+
+# ========================
+# FTP image
+# ========================
+FTP_HOST = os.getenv("FTP_HOST")
+FTP_USER = os.getenv("FTP_USER")
+FTP_PASSWORD = os.getenv("FTP_PASSWORD")
+FTP_UPLOAD_BASE_DIR = os.getenv("FTP_UPLOAD_BASE_DIR")
+FTP_PUBLIC_BASE_URL = os.getenv("FTP_PUBLIC_BASE_URL")
 
 # ========================
 # Config
@@ -40,15 +50,10 @@ FRONTEND_ORIGINS = os.getenv(
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-UPLOAD_DIR = "upload/people"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 # ========================
 # App
 # ========================
 app = FastAPI(title="Backend API")
-
-app.mount("/upload", StaticFiles(directory="upload"), name="upload")
 
 app.add_middleware(
     CORSMiddleware,
@@ -118,19 +123,58 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     return user
 
 
-def save_image(file: UploadFile):
-    allowed_types = ["image/jpeg", "image/png", "image/jpg"]
+def ensure_ftp_dir(ftp: FTP, path: str):
+    parts = path.strip("/").split("/")
+    ftp.cwd("/")
+
+    for part in parts:
+        try:
+            ftp.mkd(part)
+        except Exception:
+            pass
+
+        ftp.cwd(part)
+
+
+def save_image_to_ftp(file: UploadFile):
+    allowed_types = ["image/jpeg", "image/png", "image/jpg", "image/webp"]
+
     if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail="Only jpg/png allowed")
+        raise HTTPException(status_code=400, detail="Only jpg/png/webp allowed")
 
+    if not FTP_HOST or not FTP_USER or not FTP_PASSWORD or not FTP_UPLOAD_BASE_DIR or not FTP_PUBLIC_BASE_URL:
+        raise HTTPException(status_code=500, detail="FTP config is missing")
+
+    month_folder = datetime.now().strftime("%Y-%m")
     file_ext = file.filename.split(".")[-1].lower()
-    unique_name = f"{uuid.uuid4()}.{file_ext}"
-    file_path = f"{UPLOAD_DIR}/{unique_name}"
+    unique_name = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + str(uuid.uuid4())[:8] + "." + file_ext
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    ftp_folder = f"{FTP_UPLOAD_BASE_DIR}/{month_folder}"
+    public_url = f"{FTP_PUBLIC_BASE_URL}/{month_folder}/{unique_name}"
 
-    return file_path
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        temp_path = tmp.name
+
+    try:
+        ftp = FTP(FTP_HOST, timeout=30)
+        ftp.login(FTP_USER, FTP_PASSWORD)
+
+        ensure_ftp_dir(ftp, ftp_folder)
+
+        with open(temp_path, "rb") as f:
+            ftp.storbinary(f"STOR {unique_name}", f)
+
+        ftp.quit()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FTP upload failed: {str(e)}")
+
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    return public_url
 
 # ========================
 # Schemas
@@ -241,11 +285,6 @@ def get_users(current_user: dict = Depends(get_current_user)):
 
 @app.post("/users", tags=["Manage Users"])
 def create_user(user: UserCreate):
-    """
-    Endpoint นี้เปิดไว้สำหรับสร้าง user แรก/สมัครสมาชิก
-    ถ้าอยากให้ต้อง login ก่อน ให้เพิ่ม:
-    current_user: dict = Depends(get_current_user)
-    """
     cursor.execute(
         "SELECT id FROM users WHERE username=%s OR email=%s",
         (user.username, user.email),
@@ -304,11 +343,6 @@ def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
     if not cursor.fetchone():
         raise HTTPException(status_code=404, detail="User not found")
 
-    cursor.execute("SELECT profile_image FROM people WHERE user_id=%s", (user_id,))
-    person = cursor.fetchone()
-    if person and person["profile_image"] and os.path.exists(person["profile_image"]):
-        os.remove(person["profile_image"])
-
     cursor.execute("DELETE FROM people WHERE user_id=%s", (user_id,))
     cursor.execute("DELETE FROM users WHERE id=%s", (user_id,))
     db.commit()
@@ -354,7 +388,7 @@ def create_person(
 
     image_path = None
     if profile_image:
-        image_path = save_image(profile_image)
+        image_path = save_image_to_ftp(profile_image)
 
     sql = """
         INSERT INTO people
@@ -367,7 +401,10 @@ def create_person(
     )
     db.commit()
 
-    return {"message": "Person created with image"}
+    return {
+        "message": "Person created",
+        "profile_image": image_path
+    }
 
 
 @app.put("/people/{person_id}", tags=["Manage People"])
@@ -391,9 +428,7 @@ def update_person(
     image_path = person["profile_image"]
 
     if profile_image:
-        if image_path and os.path.exists(image_path):
-            os.remove(image_path)
-        image_path = save_image(profile_image)
+        image_path = save_image_to_ftp(profile_image)
 
     sql = """
         UPDATE people
@@ -407,19 +442,19 @@ def update_person(
     )
     db.commit()
 
-    return {"message": "Person updated"}
+    return {
+        "message": "Person updated",
+        "profile_image": image_path
+    }
 
 
 @app.delete("/people/{person_id}", tags=["Manage People"])
 def delete_person(person_id: int, current_user: dict = Depends(get_current_user)):
-    cursor.execute("SELECT profile_image FROM people WHERE id=%s", (person_id,))
+    cursor.execute("SELECT id FROM people WHERE id=%s", (person_id,))
     person = cursor.fetchone()
 
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
-
-    if person["profile_image"] and os.path.exists(person["profile_image"]):
-        os.remove(person["profile_image"])
 
     cursor.execute("DELETE FROM people WHERE id=%s", (person_id,))
     db.commit()
