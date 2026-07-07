@@ -311,6 +311,14 @@ def get_user_profile(user_id: int, current_user: dict = Depends(get_current_user
         db.close()
 
 # ========================
+# roles
+# ========================
+
+
+from routers.roles import router as roles_router
+app.include_router(roles_router)
+
+# ========================
 # Users
 # ========================
 @app.get("/users", tags=["Manage Users"])
