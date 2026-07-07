@@ -122,7 +122,17 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 
     try:
         cursor.execute(
-            "SELECT id, username, email FROM users WHERE id=%s",
+            """
+            SELECT 
+                u.id,
+                u.username,
+                u.email,
+                u.role_id,
+                r.role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE u.id=%s
+            """,
             (user_id,),
         )
 
@@ -135,8 +145,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 
     finally:
         cursor.close()
-        db.close()
-        
+        db.close()       
 
 
 
@@ -200,13 +209,14 @@ class UserCreate(BaseModel):
     username: str
     email: str
     password: str
+    role_id: int | None = None
 
 
 class UserUpdate(BaseModel):
     username: str
     email: str
     password: str | None = None
-
+    role_id: int | None = None
 
 class PersonUpdate(BaseModel):
     first_name: str
@@ -240,7 +250,18 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
     try:
         cursor.execute(
-            "SELECT id, username, email, password FROM users WHERE username=%s",
+            """
+            SELECT
+                u.id,
+                u.username,
+                u.email,
+                u.password,
+                u.role_id,
+                r.role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE u.username=%s
+            """,
             (form_data.username,),
         )
 
@@ -268,6 +289,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
             "user_id": user["id"],
             "username": user["username"],
             "email": user["email"],
+            "role_id": user["role_id"],
+            "role_name": user["role_name"],
         }
 
     finally:
@@ -327,7 +350,17 @@ def get_users(current_user: dict = Depends(get_current_user)):
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute("SELECT id, username, email FROM users")
+        cursor.execute("""
+            SELECT 
+                u.id,
+                u.username,
+                u.email,
+                u.role_id,
+                r.role_name
+            FROM users u
+            LEFT JOIN roles r ON u.role_id = r.id
+            ORDER BY u.id DESC
+        """)
         return cursor.fetchall()
 
     finally:
@@ -349,16 +382,26 @@ def create_user(user: UserCreate):
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Username หรือ Email ถูกใช้งานแล้ว")
 
+        if user.role_id:
+            cursor.execute("SELECT id FROM roles WHERE id=%s", (user.role_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="Role not found")
+
         hashed_password = hash_password(user.password)
 
-        sql = """
-            INSERT INTO users (username, email, password)
-            VALUES (%s, %s, %s)
-        """
-        cursor.execute(sql, (user.username, user.email, hashed_password))
+        cursor.execute(
+            """
+            INSERT INTO users (username, email, password, role_id)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (user.username, user.email, hashed_password, user.role_id),
+        )
         db.commit()
 
-        return {"message": "User created"}
+        return {
+            "message": "User created",
+            "user_id": cursor.lastrowid
+        }
 
     except Exception:
         db.rollback()
@@ -368,9 +411,12 @@ def create_user(user: UserCreate):
         cursor.close()
         db.close()
 
-
 @app.put("/users/{user_id}", tags=["Manage Users"])
-def update_user(user_id: int, user: UserUpdate, current_user: dict = Depends(get_current_user)):
+def update_user(
+    user_id: int,
+    user: UserUpdate,
+    current_user: dict = Depends(get_current_user)
+):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
@@ -386,24 +432,55 @@ def update_user(user_id: int, user: UserUpdate, current_user: dict = Depends(get
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Username หรือ Email ถูกใช้งานแล้ว")
 
+        if user.role_id:
+            cursor.execute(
+                "SELECT id FROM roles WHERE id=%s",
+                (user.role_id,),
+            )
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="Role not found")
+
         if user.password:
-            hashed_password = hash_password(user.password)
-            sql = """
+            cursor.execute(
+                """
                 UPDATE users
-                SET username=%s, email=%s, password=%s
+                SET username=%s,
+                    email=%s,
+                    password=%s,
+                    role_id=%s
                 WHERE id=%s
-            """
-            cursor.execute(sql, (user.username, user.email, hashed_password, user_id))
+                """,
+                (
+                    user.username,
+                    user.email,
+                    hash_password(user.password),
+                    user.role_id,
+                    user_id,
+                ),
+            )
         else:
-            sql = """
+            cursor.execute(
+                """
                 UPDATE users
-                SET username=%s, email=%s
+                SET username=%s,
+                    email=%s,
+                    role_id=%s
                 WHERE id=%s
-            """
-            cursor.execute(sql, (user.username, user.email, user_id))
+                """,
+                (
+                    user.username,
+                    user.email,
+                    user.role_id,
+                    user_id,
+                ),
+            )
 
         db.commit()
-        return {"message": "User updated"}
+
+        return {
+            "message": "User updated",
+            "user_id": user_id
+        }
 
     except Exception:
         db.rollback()
@@ -412,7 +489,6 @@ def update_user(user_id: int, user: UserUpdate, current_user: dict = Depends(get
     finally:
         cursor.close()
         db.close()
-
 
 
 
