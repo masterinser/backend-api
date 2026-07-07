@@ -158,7 +158,7 @@ def save_image_to_ftp(file: UploadFile):
 
     month_folder = datetime.now().strftime("%Y-%m")
     file_ext = file.filename.split(".")[-1].lower()
-    unique_name = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + str(uuid.uuid4())[:8] + "." + file_ext
+    unique_name = str(uuid.uuid4())[:8] + "." + file_ext
 
     ftp_folder = f"{FTP_UPLOAD_BASE_DIR}/{month_folder}"
     public_url = f"{FTP_PUBLIC_BASE_URL}/{month_folder}/{unique_name}"
