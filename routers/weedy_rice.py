@@ -1,0 +1,146 @@
+# routers/weedy_rice.py
+
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from main import get_db, get_current_user
+
+
+router = APIRouter(
+    prefix="/weedy-rice",
+    tags=["Weedy Rice"]
+)
+
+
+class WeedyRiceRow(BaseModel):
+    plot_no: int
+    values: list[float | None]
+
+
+class WeedyRiceCreate(BaseModel):
+    location: str = "Weedy rice"
+    daa: int
+    record_date: date
+    note: str | None = None
+    rows: list[WeedyRiceRow]
+
+
+@router.post("/records")
+def create_weedy_rice_record(
+    payload: WeedyRiceCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute(
+            """
+            INSERT INTO weedy_rice_records
+            (location, daa, record_date, note, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                payload.location,
+                payload.daa,
+                payload.record_date,
+                payload.note,
+                current_user["id"],
+            ),
+        )
+
+        record_id = cursor.lastrowid
+
+        for row in payload.rows:
+            for index, height in enumerate(row.values, start=1):
+                cursor.execute(
+                    """
+                    INSERT INTO weedy_rice_heights
+                    (record_id, plot_no, plant_no, height_cm, created_by)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record_id,
+                        row.plot_no,
+                        index,
+                        height,
+                        current_user["id"],
+                    ),
+                )
+
+        db.commit()
+
+        return {
+            "message": "Weedy rice record created",
+            "record_id": record_id,
+        }
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
+
+
+@router.get("/records/{record_id}")
+def get_weedy_rice_record(
+    record_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute(
+            """
+            SELECT *
+            FROM weedy_rice_records
+            WHERE id=%s
+            """,
+            (record_id,),
+        )
+
+        record = cursor.fetchone()
+
+        if not record:
+            raise HTTPException(status_code=404, detail="Record not found")
+
+        cursor.execute(
+            """
+            SELECT plot_no, plant_no, height_cm
+            FROM weedy_rice_heights
+            WHERE record_id=%s
+            ORDER BY plot_no ASC, plant_no ASC
+            """,
+            (record_id,),
+        )
+
+        heights = cursor.fetchall()
+
+        rows_dict = {}
+
+        for item in heights:
+            plot_no = item["plot_no"]
+
+            if plot_no not in rows_dict:
+                rows_dict[plot_no] = {
+                    "plot_no": plot_no,
+                    "values": []
+                }
+
+            rows_dict[plot_no]["values"].append(
+                float(item["height_cm"]) if item["height_cm"] is not None else None
+            )
+
+        return {
+            "record": record,
+            "rows": list(rows_dict.values()),
+        }
+
+    finally:
+        cursor.close()
+        db.close()

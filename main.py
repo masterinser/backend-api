@@ -5,6 +5,7 @@ import uuid
 from ftplib import FTP
 import tempfile
 
+
 import mysql.connector
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
 
 # ========================
 # Load ENV
@@ -62,6 +64,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 
 # ========================
 # DB
@@ -133,6 +137,8 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         cursor.close()
         db.close()
         
+
+
 
 def ensure_ftp_dir(ftp: FTP, path: str):
     parts = path.strip("/").split("/")
@@ -209,6 +215,7 @@ class PersonUpdate(BaseModel):
     phone: str
     age: int
     job: str
+    
 
 # ========================
 # Root / Health
@@ -611,6 +618,10 @@ def delete_person(
     finally:
         cursor.close()
         db.close()
+
+# import router หลังจากมี get_db/get_current_user แล้ว
+from routers.weedy_rice import router as weedy_rice_router
+app.include_router(weedy_rice_router)
 
 # ========================
 # Run local:
