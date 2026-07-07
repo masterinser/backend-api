@@ -66,15 +66,16 @@ app.add_middleware(
 # ========================
 # DB
 # ========================
-db = mysql.connector.connect(
-    host=DB_HOST,
-    port=DB_PORT,
-    user=DB_USER,
-    password=DB_PASSWORD,
-    database=DB_NAME,
-    autocommit=False,
-)
-cursor = db.cursor(dictionary=True)
+def get_db():
+    db = mysql.connector.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
+        autocommit=False,
+    )
+    return db
 
 # ========================
 # Utils
@@ -95,6 +96,7 @@ def create_access_token(data: dict):
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token ไม่ถูกต้อง หรือหมดอายุแล้ว",
@@ -111,17 +113,26 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
 
-    cursor.execute(
-        "SELECT id, username, email FROM users WHERE id=%s",
-        (user_id,),
-    )
-    user = cursor.fetchone()
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    if not user:
-        raise credentials_exception
+    try:
+        cursor.execute(
+            "SELECT id, username, email FROM users WHERE id=%s",
+            (user_id,),
+        )
 
-    return user
+        user = cursor.fetchone()
 
+        if not user:
+            raise credentials_exception
+
+        return user
+
+    finally:
+        cursor.close()
+        db.close()
+        
 
 def ensure_ftp_dir(ftp: FTP, path: str):
     parts = path.strip("/").split("/")
@@ -216,35 +227,45 @@ def health():
 # ========================
 @app.post("/login", tags=["Auth"])
 def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    cursor.execute(
-        "SELECT id, username, email, password FROM users WHERE username=%s",
-        (form_data.username,),
-    )
-    user = cursor.fetchone()
 
-    if not user or not verify_password(form_data.password, user["password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Username หรือ Password ไม่ถูกต้อง",
-            headers={"WWW-Authenticate": "Bearer"},
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute(
+            "SELECT id, username, email, password FROM users WHERE username=%s",
+            (form_data.username,),
         )
 
-    access_token = create_access_token(
-        data={
+        user = cursor.fetchone()
+
+        if not user or not verify_password(form_data.password, user["password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Username หรือ Password ไม่ถูกต้อง",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        access_token = create_access_token(
+            data={
+                "user_id": user["id"],
+                "username": user["username"],
+                "email": user["email"],
+            }
+        )
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
             "user_id": user["id"],
             "username": user["username"],
             "email": user["email"],
         }
-    )
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
-        "user_id": user["id"],
-        "username": user["username"],
-        "email": user["email"],
-    }
+    finally:
+        cursor.close()
+        db.close()
 
 
 @app.get("/me", tags=["Auth"])
@@ -279,92 +300,147 @@ def get_user_profile(user_id: int, current_user: dict = Depends(get_current_user
 # ========================
 @app.get("/users", tags=["Manage Users"])
 def get_users(current_user: dict = Depends(get_current_user)):
-    cursor.execute("SELECT id, username, email FROM users")
-    return cursor.fetchall()
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute("SELECT id, username, email FROM users")
+        return cursor.fetchall()
+
+    finally:
+        cursor.close()
+        db.close()
+
 
 
 @app.post("/users", tags=["Manage Users"])
 def create_user(user: UserCreate):
-    cursor.execute(
-        "SELECT id FROM users WHERE username=%s OR email=%s",
-        (user.username, user.email),
-    )
-    if cursor.fetchone():
-        raise HTTPException(status_code=400, detail="Username หรือ Email ถูกใช้งานแล้ว")
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    hashed_password = hash_password(user.password)
+    try:
+        cursor.execute(
+            "SELECT id FROM users WHERE username=%s OR email=%s",
+            (user.username, user.email),
+        )
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Username หรือ Email ถูกใช้งานแล้ว")
 
-    sql = """
-        INSERT INTO users (username, email, password)
-        VALUES (%s, %s, %s)
-    """
-    cursor.execute(sql, (user.username, user.email, hashed_password))
-    db.commit()
+        hashed_password = hash_password(user.password)
 
-    return {"message": "User created"}
+        sql = """
+            INSERT INTO users (username, email, password)
+            VALUES (%s, %s, %s)
+        """
+        cursor.execute(sql, (user.username, user.email, hashed_password))
+        db.commit()
+
+        return {"message": "User created"}
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
 
 
 @app.put("/users/{user_id}", tags=["Manage Users"])
 def update_user(user_id: int, user: UserUpdate, current_user: dict = Depends(get_current_user)):
-    cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="User not found")
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    cursor.execute(
-        "SELECT id FROM users WHERE (username=%s OR email=%s) AND id != %s",
-        (user.username, user.email, user_id),
-    )
-    if cursor.fetchone():
-        raise HTTPException(status_code=400, detail="Username หรือ Email ถูกใช้งานแล้ว")
+    try:
+        cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
 
-    if user.password:
-        hashed_password = hash_password(user.password)
-        sql = """
-            UPDATE users
-            SET username=%s, email=%s, password=%s
-            WHERE id=%s
-        """
-        cursor.execute(sql, (user.username, user.email, hashed_password, user_id))
-    else:
-        sql = """
-            UPDATE users
-            SET username=%s, email=%s
-            WHERE id=%s
-        """
-        cursor.execute(sql, (user.username, user.email, user_id))
+        cursor.execute(
+            "SELECT id FROM users WHERE (username=%s OR email=%s) AND id != %s",
+            (user.username, user.email, user_id),
+        )
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Username หรือ Email ถูกใช้งานแล้ว")
 
-    db.commit()
-    return {"message": "User updated"}
+        if user.password:
+            hashed_password = hash_password(user.password)
+            sql = """
+                UPDATE users
+                SET username=%s, email=%s, password=%s
+                WHERE id=%s
+            """
+            cursor.execute(sql, (user.username, user.email, hashed_password, user_id))
+        else:
+            sql = """
+                UPDATE users
+                SET username=%s, email=%s
+                WHERE id=%s
+            """
+            cursor.execute(sql, (user.username, user.email, user_id))
+
+        db.commit()
+        return {"message": "User updated"}
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
+
+
+
 
 
 @app.delete("/users/{user_id}", tags=["Manage Users"])
 def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
-    cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="User not found")
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    cursor.execute("DELETE FROM people WHERE user_id=%s", (user_id,))
-    cursor.execute("DELETE FROM users WHERE id=%s", (user_id,))
-    db.commit()
+    try:
+        cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
 
-    return {"message": "User deleted"}
+        cursor.execute("DELETE FROM people WHERE user_id=%s", (user_id,))
+        cursor.execute("DELETE FROM users WHERE id=%s", (user_id,))
+        db.commit()
+
+        return {"message": "User deleted"}
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
 
 # ========================
 # People
 # ========================
 @app.get("/people", tags=["Manage People"])
 def get_people(current_user: dict = Depends(get_current_user)):
-    sql = """
-        SELECT
-            p.*,
-            u.username,
-            u.email
-        FROM people p
-        JOIN users u ON p.user_id = u.id
-    """
-    cursor.execute(sql)
-    return cursor.fetchall()
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
+    try:
+        sql = """
+            SELECT
+                p.*,
+                u.username,
+                u.email
+            FROM people p
+            JOIN users u ON p.user_id = u.id
+        """
+        cursor.execute(sql)
+        return cursor.fetchall()
+
+    finally:
+        cursor.close()
+        db.close()
 
 @app.post("/people", tags=["Manage People"])
 def create_person(
@@ -378,33 +454,57 @@ def create_person(
     profile_image: UploadFile = File(None),
     current_user: dict = Depends(get_current_user),
 ):
-    cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="User not found")
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    cursor.execute("SELECT id FROM people WHERE user_id=%s", (user_id,))
-    if cursor.fetchone():
-        raise HTTPException(status_code=400, detail="Profile already exists")
+    try:
+        cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
 
-    image_path = None
-    if profile_image:
-        image_path = save_image_to_ftp(profile_image)
+        cursor.execute("SELECT id FROM people WHERE user_id=%s", (user_id,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Profile already exists")
 
-    sql = """
-        INSERT INTO people
-        (user_id, first_name, last_name, nickname, phone, age, job, profile_image)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    """
-    cursor.execute(
-        sql,
-        (user_id, first_name, last_name, nickname, phone, age, job, image_path),
-    )
-    db.commit()
+        image_path = None
+        if profile_image:
+            image_path = save_image_to_ftp(profile_image)
 
-    return {
-        "message": "Person created",
-        "profile_image": image_path
-    }
+        sql = """
+            INSERT INTO people
+            (user_id, first_name, last_name, nickname, phone, age, job, profile_image)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+
+        cursor.execute(
+            sql,
+            (
+                user_id,
+                first_name,
+                last_name,
+                nickname,
+                phone,
+                age,
+                job,
+                image_path,
+            ),
+        )
+
+        db.commit()
+
+        return {
+            "message": "Person created",
+            "profile_image": image_path,
+        }
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
+
 
 
 @app.put("/people/{person_id}", tags=["Manage People"])
@@ -419,47 +519,90 @@ def update_person(
     profile_image: UploadFile = File(None),
     current_user: dict = Depends(get_current_user),
 ):
-    cursor.execute("SELECT * FROM people WHERE id=%s", (person_id,))
-    person = cursor.fetchone()
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
+    try:
+        cursor.execute("SELECT * FROM people WHERE id=%s", (person_id,))
+        person = cursor.fetchone()
 
-    image_path = person["profile_image"]
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    if profile_image:
-        image_path = save_image_to_ftp(profile_image)
+        image_path = person["profile_image"]
 
-    sql = """
-        UPDATE people
-        SET first_name=%s, last_name=%s, nickname=%s,
-            phone=%s, age=%s, job=%s, profile_image=%s
-        WHERE id=%s
-    """
-    cursor.execute(
-        sql,
-        (first_name, last_name, nickname, phone, age, job, image_path, person_id),
-    )
-    db.commit()
+        if profile_image:
+            image_path = save_image_to_ftp(profile_image)
 
-    return {
-        "message": "Person updated",
-        "profile_image": image_path
-    }
+        sql = """
+            UPDATE people
+            SET first_name=%s,
+                last_name=%s,
+                nickname=%s,
+                phone=%s,
+                age=%s,
+                job=%s,
+                profile_image=%s
+            WHERE id=%s
+        """
+
+        cursor.execute(
+            sql,
+            (
+                first_name,
+                last_name,
+                nickname,
+                phone,
+                age,
+                job,
+                image_path,
+                person_id,
+            ),
+        )
+
+        db.commit()
+
+        return {
+            "message": "Person updated",
+            "profile_image": image_path,
+        }
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
 
 
 @app.delete("/people/{person_id}", tags=["Manage People"])
-def delete_person(person_id: int, current_user: dict = Depends(get_current_user)):
-    cursor.execute("SELECT id FROM people WHERE id=%s", (person_id,))
-    person = cursor.fetchone()
+def delete_person(
+    person_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
+    try:
+        cursor.execute("SELECT id FROM people WHERE id=%s", (person_id,))
+        person = cursor.fetchone()
 
-    cursor.execute("DELETE FROM people WHERE id=%s", (person_id,))
-    db.commit()
+        if not person:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    return {"message": "Person deleted"}
+        cursor.execute("DELETE FROM people WHERE id=%s", (person_id,))
+        db.commit()
+
+        return {"message": "Person deleted"}
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
 
 # ========================
 # Run local:
