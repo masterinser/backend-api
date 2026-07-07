@@ -277,23 +277,31 @@ def me(current_user: dict = Depends(get_current_user)):
 # ========================
 @app.get("/users/{user_id}/profile", tags=["Manage Users & Profile"])
 def get_user_profile(user_id: int, current_user: dict = Depends(get_current_user)):
-    sql = """
-        SELECT
-            u.id AS user_id,
-            u.username,
-            u.email,
-            p.*
-        FROM users u
-        LEFT JOIN people p ON u.id = p.user_id
-        WHERE u.id = %s
-    """
-    cursor.execute(sql, (user_id,))
-    data = cursor.fetchone()
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
 
-    if not data:
-        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        sql = """
+            SELECT
+                u.id AS user_id,
+                u.username,
+                u.email,
+                p.*
+            FROM users u
+            LEFT JOIN people p ON u.id = p.user_id
+            WHERE u.id = %s
+        """
+        cursor.execute(sql, (user_id,))
+        data = cursor.fetchone()
 
-    return data
+        if not data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        return data
+
+    finally:
+        cursor.close()
+        db.close()
 
 # ========================
 # Users
