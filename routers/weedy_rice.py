@@ -144,3 +144,123 @@ def get_weedy_rice_record(
     finally:
         cursor.close()
         db.close()
+
+
+@router.put("/records/{record_id}")
+def update_weedy_rice_record(
+    record_id: int,
+    payload: WeedyRiceCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute(
+            """
+            SELECT id FROM weedy_rice_records
+            WHERE id=%s AND created_by=%s
+            """,
+            (record_id, current_user["id"]),
+        )
+
+        if not cursor.fetchone():
+            raise HTTPException(
+                status_code=403,
+                detail="You can edit only your own record"
+            )
+
+        cursor.execute(
+            """
+            UPDATE weedy_rice_records
+            SET location=%s, daa=%s, record_date=%s, note=%s
+            WHERE id=%s
+            """,
+            (
+                payload.location,
+                payload.daa,
+                payload.record_date,
+                payload.note,
+                record_id,
+            ),
+        )
+
+        cursor.execute(
+            "DELETE FROM weedy_rice_heights WHERE record_id=%s",
+            (record_id,),
+        )
+
+        for row in payload.rows:
+            for index, height in enumerate(row.values, start=1):
+                cursor.execute(
+                    """
+                    INSERT INTO weedy_rice_heights
+                    (record_id, plot_no, plant_no, height_cm, created_by)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record_id,
+                        row.plot_no,
+                        index,
+                        height,
+                        current_user["id"],
+                    ),
+                )
+
+        db.commit()
+
+        return {
+            "message": "Weedy rice record updated",
+            "record_id": record_id,
+        }
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
+
+@router.delete("/records/{record_id}")
+def delete_weedy_rice_record(
+    record_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute(
+            """
+            SELECT id FROM weedy_rice_records
+            WHERE id=%s AND created_by=%s
+            """,
+            (record_id, current_user["id"]),
+        )
+
+        if not cursor.fetchone():
+            raise HTTPException(
+                status_code=403,
+                detail="You can delete only your own record"
+            )
+
+        cursor.execute(
+            "DELETE FROM weedy_rice_records WHERE id=%s",
+            (record_id,),
+        )
+
+        db.commit()
+
+        return {
+            "message": "Weedy rice record deleted",
+            "record_id": record_id,
+        }
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        db.close()
