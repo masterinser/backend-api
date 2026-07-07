@@ -707,6 +707,26 @@ def delete_person(
 from routers.weedy_rice import router as weedy_rice_router
 app.include_router(weedy_rice_router)
 
+
+from routers.projects import router as projects_router
+app.include_router(projects_router)
+
+
+from routers.treatments import router as treatments_router
+app.include_router(treatments_router)
+
+from routers.trials import router as trials_router
+app.include_router(trials_router)
+
+from routers.plots import router as plots_router
+app.include_router(plots_router)
+
+from routers.observations import router as observations_router
+app.include_router(observations_router)
+
+from routers.measurements import router as measurements_router
+app.include_router(measurements_router)
+
 # ========================
 # Run local:
 # uvicorn main:app --reload

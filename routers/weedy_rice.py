@@ -264,3 +264,27 @@ def delete_weedy_rice_record(
     finally:
         cursor.close()
         db.close()
+        
+
+@router.get("/template")
+def get_weedy_rice_template(
+    start_plot: int = 101,
+    end_plot: int = 140,
+    plants: int = 10,
+    current_user: dict = Depends(get_current_user),
+):
+    rows = []
+
+    for plot_no in range(start_plot, end_plot + 1):
+        rows.append({
+            "plot_no": plot_no,
+            "values": [None for _ in range(plants)]
+        })
+
+    return {
+        "location": "Weedy rice",
+        "daa": 60,
+        "record_date": date.today(),
+        "note": "",
+        "rows": rows
+    }
