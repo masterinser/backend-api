@@ -255,3 +255,112 @@ def get_measurement_grid(
     finally:
         cursor.close()
         db.close()
+
+@router.get("/raw-data")
+def get_measurement_raw_data(
+    observation_id: int,
+    current_user: dict = Depends(require_permission("manage_measurements")),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute("""
+                SELECT
+                    o.id AS observation_id,
+                    o.trial_id,
+                    o.observation_name,
+                    o.observation_code,
+                    o.unit,
+                    o.daa,
+                    o.observation_date
+                FROM observations o
+                WHERE o.id=%s
+            """, (observation_id,))
+        else:
+            cursor.execute("""
+                SELECT
+                    o.id AS observation_id,
+                    o.trial_id,
+                    o.observation_name,
+                    o.observation_code,
+                    o.unit,
+                    o.daa,
+                    o.observation_date
+                FROM observations o
+                INNER JOIN trials t ON t.id=o.trial_id
+                INNER JOIN projects p ON p.id=t.project_id
+                WHERE o.id=%s
+                AND p.created_by=%s
+            """, (observation_id, current_user["id"]))
+
+        observation = cursor.fetchone()
+
+        if not observation:
+            raise HTTPException(status_code=404, detail="Observation not found")
+
+        cursor.execute("""
+            SELECT
+                p.id AS plot_id,
+                p.plot_no,
+                p.rep,
+                p.treatment,
+                p.variety,
+                m.sample_no,
+                m.value_decimal
+            FROM plots p
+            LEFT JOIN measurements m
+                ON p.id = m.plot_id
+                AND m.observation_id = %s
+            WHERE p.trial_id=%s
+            ORDER BY p.plot_no ASC, m.sample_no ASC
+        """, (
+            observation_id,
+            observation["trial_id"],
+        ))
+
+        data = cursor.fetchall()
+        rows_dict = {}
+
+        for item in data:
+            plot_id = item["plot_id"]
+
+            if plot_id not in rows_dict:
+                rows_dict[plot_id] = {
+                    "plot_id": plot_id,
+                    "plot_no": item["plot_no"],
+                    "rep": item["rep"],
+                    "treatment": item["treatment"],
+                    "variety": item["variety"],
+                    "values": [],
+                    "average": None,
+                    "count": 0,
+                }
+
+            if item["sample_no"] is not None:
+                rows_dict[plot_id]["values"].append(
+                    float(item["value_decimal"]) if item["value_decimal"] is not None else None
+                )
+
+        rows = list(rows_dict.values())
+
+        for row in rows:
+            nums = [
+                float(v)
+                for v in row["values"]
+                if v is not None
+            ]
+
+            row["count"] = len(nums)
+            row["average"] = round(sum(nums) / len(nums), 2) if nums else None
+
+        return {
+            "observation": observation,
+            "rows": rows,
+            "total_plots": len(rows),
+        }
+
+    finally:
+        cursor.close()
+        db.close()
