@@ -30,7 +30,7 @@ DB_PORT = int(os.getenv("DB_PORT", "3306"))
 
 SECRET_KEY = os.getenv("SECRET_KEY", "please_change_this_secret_key")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "180"))
 
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS",
