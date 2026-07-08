@@ -746,6 +746,7 @@ def delete_person(
     finally:
         cursor.close()
         db.close()
+        
 
 # import router หลังจากมี get_db/get_current_user แล้ว
 from routers.weedy_rice import router as weedy_rice_router
@@ -784,6 +785,9 @@ app.include_router(products_router)
 from routers.project_members import router as project_members_router
 app.include_router(project_members_router)
 
+
+from routers.dashboard import router as dashboard_router
+app.include_router(dashboard_router)
 # ========================
 # Run local:
 # uvicorn main:app --reload
