@@ -520,3 +520,138 @@ def get_measurement_statistics(
     finally:
         cursor.close()
         db.close()
+
+
+@router.get("/treatment-statistics")
+def get_treatment_statistics(
+    observation_id: int,
+    current_user: dict = Depends(require_permission("manage_measurements")),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        # ตรวจสอบสิทธิ์
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute("""
+                SELECT
+                    o.id,
+                    o.trial_id,
+                    o.observation_name,
+                    o.observation_code,
+                    o.unit,
+                    o.daa
+                FROM observations o
+                WHERE o.id=%s
+            """, (observation_id,))
+        else:
+            cursor.execute("""
+                SELECT
+                    o.id,
+                    o.trial_id,
+                    o.observation_name,
+                    o.observation_code,
+                    o.unit,
+                    o.daa
+                FROM observations o
+                INNER JOIN trials t ON t.id=o.trial_id
+                INNER JOIN projects p ON p.id=t.project_id
+                WHERE o.id=%s
+                AND p.created_by=%s
+            """, (
+                observation_id,
+                current_user["id"],
+            ))
+
+        observation = cursor.fetchone()
+
+        if not observation:
+            raise HTTPException(
+                status_code=404,
+                detail="Observation not found"
+            )
+
+        cursor.execute("""
+            SELECT
+                p.treatment,
+                p.variety,
+                m.value_decimal
+            FROM plots p
+            INNER JOIN measurements m
+                ON m.plot_id = p.id
+            WHERE
+                m.observation_id=%s
+                AND p.trial_id=%s
+            ORDER BY p.treatment
+        """, (
+            observation_id,
+            observation["trial_id"],
+        ))
+
+        records = cursor.fetchall()
+
+        groups = {}
+
+        for item in records:
+
+            treatment = item["treatment"] or "Unknown"
+
+            if treatment not in groups:
+                groups[treatment] = {
+                    "treatment": treatment,
+                    "variety": item["variety"],
+                    "values": [],
+                }
+
+            if item["value_decimal"] is not None:
+                groups[treatment]["values"].append(
+                    float(item["value_decimal"])
+                )
+
+        rows = []
+
+        for group in groups.values():
+
+            values = group["values"]
+
+            n = len(values)
+
+            if n == 0:
+                continue
+
+            mean = sum(values) / n
+
+            if n > 1:
+                variance = sum(
+                    (x - mean) ** 2
+                    for x in values
+                ) / (n - 1)
+
+                sd = math.sqrt(variance)
+            else:
+                sd = 0
+
+            cv = (sd / mean * 100) if mean != 0 else 0
+
+            rows.append({
+                "treatment": group["treatment"],
+                "variety": group["variety"],
+                "count": n,
+                "mean": round(mean, 2),
+                "sd": round(sd, 2),
+                "cv": round(cv, 2),
+                "min": round(min(values), 2),
+                "max": round(max(values), 2),
+            })
+
+        rows.sort(key=lambda x: x["treatment"])
+
+        return {
+            "observation": observation,
+            "rows": rows,
+            "total_treatments": len(rows),
+        }
+
+    finally:
+        cursor.close()
+        db.close()
