@@ -775,6 +775,15 @@ from routers.permissions import router as permissions_router
 app.include_router(permissions_router)
 
 
+from routers.varieties import router as varieties_router
+app.include_router(varieties_router)
+
+from routers.products import router as products_router
+app.include_router(products_router)
+
+from routers.project_members import router as project_members_router
+app.include_router(project_members_router)
+
 # ========================
 # Run local:
 # uvicorn main:app --reload
