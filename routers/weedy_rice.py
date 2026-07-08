@@ -5,7 +5,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from main import get_db, get_current_user
+from main import get_db, require_permission, has_permission
 
 
 router = APIRouter(
@@ -27,10 +27,34 @@ class WeedyRiceCreate(BaseModel):
     rows: list[WeedyRiceRow]
 
 
+@router.get("/template")
+def get_weedy_rice_template(
+    start_plot: int = 101,
+    end_plot: int = 140,
+    plants: int = 10,
+    current_user: dict = Depends(require_permission("manage_measurements")),
+):
+    rows = []
+
+    for plot_no in range(start_plot, end_plot + 1):
+        rows.append({
+            "plot_no": plot_no,
+            "values": [None for _ in range(plants)]
+        })
+
+    return {
+        "location": "Weedy rice",
+        "daa": 60,
+        "record_date": date.today(),
+        "note": "",
+        "rows": rows
+    }
+
+
 @router.post("/records")
 def create_weedy_rice_record(
     payload: WeedyRiceCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_measurements")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -89,20 +113,30 @@ def create_weedy_rice_record(
 @router.get("/records/{record_id}")
 def get_weedy_rice_record(
     record_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_measurements")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT *
-            FROM weedy_rice_records
-            WHERE id=%s
-            """,
-            (record_id,),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                """
+                SELECT *
+                FROM weedy_rice_records
+                WHERE id=%s
+                """,
+                (record_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT *
+                FROM weedy_rice_records
+                WHERE id=%s AND created_by=%s
+                """,
+                (record_id, current_user["id"]),
+            )
 
         record = cursor.fetchone()
 
@@ -120,7 +154,6 @@ def get_weedy_rice_record(
         )
 
         heights = cursor.fetchall()
-
         rows_dict = {}
 
         for item in heights:
@@ -150,19 +183,28 @@ def get_weedy_rice_record(
 def update_weedy_rice_record(
     record_id: int,
     payload: WeedyRiceCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_measurements")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT id FROM weedy_rice_records
-            WHERE id=%s AND created_by=%s
-            """,
-            (record_id, current_user["id"]),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                """
+                SELECT id FROM weedy_rice_records
+                WHERE id=%s
+                """,
+                (record_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id FROM weedy_rice_records
+                WHERE id=%s AND created_by=%s
+                """,
+                (record_id, current_user["id"]),
+            )
 
         if not cursor.fetchone():
             raise HTTPException(
@@ -222,22 +264,32 @@ def update_weedy_rice_record(
         cursor.close()
         db.close()
 
+
 @router.delete("/records/{record_id}")
 def delete_weedy_rice_record(
     record_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_measurements")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT id FROM weedy_rice_records
-            WHERE id=%s AND created_by=%s
-            """,
-            (record_id, current_user["id"]),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                """
+                SELECT id FROM weedy_rice_records
+                WHERE id=%s
+                """,
+                (record_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id FROM weedy_rice_records
+                WHERE id=%s AND created_by=%s
+                """,
+                (record_id, current_user["id"]),
+            )
 
         if not cursor.fetchone():
             raise HTTPException(
@@ -264,27 +316,3 @@ def delete_weedy_rice_record(
     finally:
         cursor.close()
         db.close()
-        
-
-@router.get("/template")
-def get_weedy_rice_template(
-    start_plot: int = 101,
-    end_plot: int = 140,
-    plants: int = 10,
-    current_user: dict = Depends(get_current_user),
-):
-    rows = []
-
-    for plot_no in range(start_plot, end_plot + 1):
-        rows.append({
-            "plot_no": plot_no,
-            "values": [None for _ in range(plants)]
-        })
-
-    return {
-        "location": "Weedy rice",
-        "daa": 60,
-        "record_date": date.today(),
-        "note": "",
-        "rows": rows
-    }

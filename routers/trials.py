@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from datetime import date
 
-from main import get_db, get_current_user
+from main import get_db, require_permission, has_permission
 
 
 router = APIRouter(
@@ -33,30 +33,55 @@ class TrialUpdate(BaseModel):
 @router.get("")
 def get_trials(
     project_id: int | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_trials")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        if project_id:
-            cursor.execute(
-                """
-                SELECT *
-                FROM trials
-                WHERE project_id=%s
-                ORDER BY id DESC
-                """,
-                (project_id,),
-            )
+        if has_permission(current_user["id"], "view_all_projects"):
+            if project_id:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM trials
+                    WHERE project_id=%s
+                    ORDER BY id DESC
+                    """,
+                    (project_id,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM trials
+                    ORDER BY id DESC
+                    """
+                )
         else:
-            cursor.execute(
-                """
-                SELECT *
-                FROM trials
-                ORDER BY id DESC
-                """
-            )
+            if project_id:
+                cursor.execute(
+                    """
+                    SELECT t.*
+                    FROM trials t
+                    INNER JOIN projects p ON p.id=t.project_id
+                    WHERE t.project_id=%s
+                    AND p.created_by=%s
+                    ORDER BY t.id DESC
+                    """,
+                    (project_id, current_user["id"]),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT t.*
+                    FROM trials t
+                    INNER JOIN projects p ON p.id=t.project_id
+                    WHERE p.created_by=%s
+                    ORDER BY t.id DESC
+                    """,
+                    (current_user["id"],),
+                )
 
         return cursor.fetchall()
 
@@ -68,20 +93,32 @@ def get_trials(
 @router.get("/{trial_id}")
 def get_trial(
     trial_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_trials")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT *
-            FROM trials
-            WHERE id=%s
-            """,
-            (trial_id,),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                """
+                SELECT *
+                FROM trials
+                WHERE id=%s
+                """,
+                (trial_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT t.*
+                FROM trials t
+                INNER JOIN projects p ON p.id=t.project_id
+                WHERE t.id=%s
+                AND p.created_by=%s
+                """,
+                (trial_id, current_user["id"]),
+            )
 
         data = cursor.fetchone()
 
@@ -98,24 +135,45 @@ def get_trial(
 @router.post("")
 def create_trial(
     payload: TrialCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_trials")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            "SELECT id FROM projects WHERE id=%s",
-            (payload.project_id,),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                "SELECT id FROM projects WHERE id=%s",
+                (payload.project_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT id
+                FROM projects
+                WHERE id=%s
+                AND created_by=%s
+                """,
+                (payload.project_id, current_user["id"]),
+            )
+
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Project not found")
 
         cursor.execute(
             """
             INSERT INTO trials
-            (project_id, trial_name, location, season, start_date, end_date, status, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (
+                project_id,
+                trial_name,
+                location,
+                season,
+                start_date,
+                end_date,
+                status,
+                created_by
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 payload.project_id,
@@ -149,20 +207,32 @@ def create_trial(
 def update_trial(
     trial_id: int,
     payload: TrialUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_trials")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT id
-            FROM trials
-            WHERE id=%s AND created_by=%s
-            """,
-            (trial_id, current_user["id"]),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                """
+                SELECT id
+                FROM trials
+                WHERE id=%s
+                """,
+                (trial_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT t.id
+                FROM trials t
+                INNER JOIN projects p ON p.id=t.project_id
+                WHERE t.id=%s
+                AND p.created_by=%s
+                """,
+                (trial_id, current_user["id"]),
+            )
 
         if not cursor.fetchone():
             raise HTTPException(
@@ -211,20 +281,32 @@ def update_trial(
 @router.delete("/{trial_id}")
 def delete_trial(
     trial_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_trials")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT id
-            FROM trials
-            WHERE id=%s AND created_by=%s
-            """,
-            (trial_id, current_user["id"]),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                """
+                SELECT id
+                FROM trials
+                WHERE id=%s
+                """,
+                (trial_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT t.id
+                FROM trials t
+                INNER JOIN projects p ON p.id=t.project_id
+                WHERE t.id=%s
+                AND p.created_by=%s
+                """,
+                (trial_id, current_user["id"]),
+            )
 
         if not cursor.fetchone():
             raise HTTPException(
@@ -232,7 +314,11 @@ def delete_trial(
                 detail="You can delete only your own trial"
             )
 
-        cursor.execute("DELETE FROM trials WHERE id=%s", (trial_id,))
+        cursor.execute(
+            "DELETE FROM trials WHERE id=%s",
+            (trial_id,),
+        )
+
         db.commit()
 
         return {

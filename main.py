@@ -337,6 +337,47 @@ def get_user_profile(user_id: int, current_user: dict = Depends(get_current_user
 # roles
 # ========================
 
+from routers.permissions import router as permissions_router
+app.include_router(permissions_router)
+
+def has_permission(user_id: int, permission_key: str):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute(
+            """
+            SELECT p.id
+            FROM users u
+            JOIN roles r ON u.role_id = r.id
+            JOIN role_permissions rp ON r.id = rp.role_id
+            JOIN permissions p ON rp.permission_id = p.id
+            WHERE u.id=%s AND p.permission_key=%s
+            """,
+            (user_id, permission_key),
+        )
+
+        return cursor.fetchone() is not None
+
+    finally:
+        cursor.close()
+        db.close()
+
+
+def require_permission(permission_key: str):
+    def checker(current_user: dict = Depends(get_current_user)):
+        allowed = has_permission(current_user["id"], permission_key)
+
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied: {permission_key}"
+            )
+
+        return current_user
+
+    return checker
+
 
 from routers.roles import router as roles_router
 app.include_router(roles_router)
@@ -345,7 +386,7 @@ app.include_router(roles_router)
 # Users
 # ========================
 @app.get("/users", tags=["Manage Users"])
-def get_users(current_user: dict = Depends(get_current_user)):
+def get_users(current_user: dict = Depends(require_permission("manage_users"))):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
@@ -368,9 +409,11 @@ def get_users(current_user: dict = Depends(get_current_user)):
         db.close()
 
 
-
 @app.post("/users", tags=["Manage Users"])
-def create_user(user: UserCreate):
+def create_user(
+    user: UserCreate,
+    current_user: dict = Depends(require_permission("manage_users")),
+):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
@@ -415,7 +458,7 @@ def create_user(user: UserCreate):
 def update_user(
     user_id: int,
     user: UserUpdate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_permission("manage_users"))
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -494,7 +537,10 @@ def update_user(
 
 
 @app.delete("/users/{user_id}", tags=["Manage Users"])
-def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
+def delete_user(
+    user_id: int,
+    current_user: dict = Depends(require_permission("manage_users")),
+):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
@@ -521,7 +567,7 @@ def delete_user(user_id: int, current_user: dict = Depends(get_current_user)):
 # People
 # ========================
 @app.get("/people", tags=["Manage People"])
-def get_people(current_user: dict = Depends(get_current_user)):
+def get_people(current_user: dict = Depends(require_permission("manage_users"))):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
@@ -551,7 +597,7 @@ def create_person(
     age: int = Form(...),
     job: str = Form(...),
     profile_image: UploadFile = File(None),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_users")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -616,7 +662,7 @@ def update_person(
     age: int = Form(...),
     job: str = Form(...),
     profile_image: UploadFile = File(None),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_users")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -678,7 +724,7 @@ def update_person(
 @app.delete("/people/{person_id}", tags=["Manage People"])
 def delete_person(
     person_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_users")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)

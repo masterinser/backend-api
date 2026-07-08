@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from main import get_db, get_current_user
+from main import get_db, require_permission, has_permission
 
 
 router = APIRouter(
@@ -23,23 +23,39 @@ class ProjectUpdate(BaseModel):
 
 
 @router.get("")
-def get_projects(current_user: dict = Depends(get_current_user)):
+def get_projects(current_user: dict = Depends(require_permission("manage_projects"))):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute("""
-            SELECT
-                id,
-                project_name,
-                description,
-                status,
-                created_by,
-                created_at,
-                updated_at
-            FROM projects
-            ORDER BY id DESC
-        """)
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute("""
+                SELECT
+                    id,
+                    project_name,
+                    description,
+                    status,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM projects
+                ORDER BY id DESC
+            """)
+        else:
+            cursor.execute("""
+                SELECT
+                    id,
+                    project_name,
+                    description,
+                    status,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM projects
+                WHERE created_by=%s
+                ORDER BY id DESC
+            """, (current_user["id"],))
+
         return cursor.fetchall()
 
     finally:
@@ -50,24 +66,38 @@ def get_projects(current_user: dict = Depends(get_current_user)):
 @router.get("/{project_id}")
 def get_project(
     project_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute("""
-            SELECT
-                id,
-                project_name,
-                description,
-                status,
-                created_by,
-                created_at,
-                updated_at
-            FROM projects
-            WHERE id=%s
-        """, (project_id,))
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute("""
+                SELECT
+                    id,
+                    project_name,
+                    description,
+                    status,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM projects
+                WHERE id=%s
+            """, (project_id,))
+        else:
+            cursor.execute("""
+                SELECT
+                    id,
+                    project_name,
+                    description,
+                    status,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM projects
+                WHERE id=%s AND created_by=%s
+            """, (project_id, current_user["id"]))
 
         project = cursor.fetchone()
 
@@ -84,7 +114,7 @@ def get_project(
 @router.post("")
 def create_project(
     payload: ProjectCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -121,16 +151,22 @@ def create_project(
 def update_project(
     project_id: int,
     payload: ProjectUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            "SELECT id FROM projects WHERE id=%s AND created_by=%s",
-            (project_id, current_user["id"]),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                "SELECT id FROM projects WHERE id=%s",
+                (project_id,),
+            )
+        else:
+            cursor.execute(
+                "SELECT id FROM projects WHERE id=%s AND created_by=%s",
+                (project_id, current_user["id"]),
+            )
 
         if not cursor.fetchone():
             raise HTTPException(
@@ -170,16 +206,22 @@ def update_project(
 @router.delete("/{project_id}")
 def delete_project(
     project_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            "SELECT id FROM projects WHERE id=%s AND created_by=%s",
-            (project_id, current_user["id"]),
-        )
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute(
+                "SELECT id FROM projects WHERE id=%s",
+                (project_id,),
+            )
+        else:
+            cursor.execute(
+                "SELECT id FROM projects WHERE id=%s AND created_by=%s",
+                (project_id, current_user["id"]),
+            )
 
         if not cursor.fetchone():
             raise HTTPException(

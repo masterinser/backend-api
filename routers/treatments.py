@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from main import get_db, get_current_user
+from main import get_db, require_permission, has_permission
 
 
 router = APIRouter(
@@ -28,30 +28,55 @@ class TreatmentUpdate(BaseModel):
 @router.get("")
 def get_treatments(
     project_id: int | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        if project_id:
-            cursor.execute(
-                """
-                SELECT *
-                FROM treatments
-                WHERE project_id=%s
-                ORDER BY id ASC
-                """,
-                (project_id,),
-            )
+
+        if has_permission(current_user["id"], "view_all_projects"):
+
+            if project_id:
+                cursor.execute("""
+                    SELECT *
+                    FROM treatments
+                    WHERE project_id=%s
+                    ORDER BY id ASC
+                """, (project_id,))
+            else:
+                cursor.execute("""
+                    SELECT *
+                    FROM treatments
+                    ORDER BY id DESC
+                """)
+
         else:
-            cursor.execute(
-                """
-                SELECT *
-                FROM treatments
-                ORDER BY id DESC
-                """
-            )
+
+            if project_id:
+                cursor.execute("""
+                    SELECT t.*
+                    FROM treatments t
+                    INNER JOIN projects p
+                        ON p.id=t.project_id
+                    WHERE t.project_id=%s
+                    AND p.created_by=%s
+                    ORDER BY t.id ASC
+                """, (
+                    project_id,
+                    current_user["id"],
+                ))
+            else:
+                cursor.execute("""
+                    SELECT t.*
+                    FROM treatments t
+                    INNER JOIN projects p
+                        ON p.id=t.project_id
+                    WHERE p.created_by=%s
+                    ORDER BY t.id DESC
+                """, (
+                    current_user["id"],
+                ))
 
         return cursor.fetchall()
 
@@ -63,34 +88,73 @@ def get_treatments(
 @router.post("")
 def create_treatment(
     payload: TreatmentCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            "SELECT id FROM projects WHERE id=%s",
-            (payload.project_id,),
-        )
+
+        if has_permission(current_user["id"], "view_all_projects"):
+
+            cursor.execute(
+                "SELECT id FROM projects WHERE id=%s",
+                (payload.project_id,),
+            )
+
+        else:
+
+            cursor.execute(
+                """
+                SELECT id
+                FROM projects
+                WHERE id=%s
+                AND created_by=%s
+                """,
+                (
+                    payload.project_id,
+                    current_user["id"],
+                ),
+            )
+
         if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Project not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Project not found"
+            )
 
         cursor.execute(
             """
-            SELECT id FROM treatments
-            WHERE project_id=%s AND treatment_code=%s
+            SELECT id
+            FROM treatments
+            WHERE project_id=%s
+            AND treatment_code=%s
             """,
-            (payload.project_id, payload.treatment_code),
+            (
+                payload.project_id,
+                payload.treatment_code,
+            ),
         )
+
         if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Treatment code already exists")
+            raise HTTPException(
+                status_code=400,
+                detail="Treatment code already exists"
+            )
 
         cursor.execute(
             """
             INSERT INTO treatments
-            (project_id, treatment_code, treatment_name, description, status, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            (
+                project_id,
+                treatment_code,
+                treatment_name,
+                description,
+                status,
+                created_by
+            )
+            VALUES
+            (%s,%s,%s,%s,%s,%s)
             """,
             (
                 payload.project_id,
@@ -106,7 +170,7 @@ def create_treatment(
 
         return {
             "message": "Treatment created",
-            "treatment_id": cursor.lastrowid
+            "treatment_id": cursor.lastrowid,
         }
 
     except Exception:
@@ -122,20 +186,33 @@ def create_treatment(
 def update_treatment(
     treatment_id: int,
     payload: TreatmentUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT id, project_id
-            FROM treatments
-            WHERE id=%s AND created_by=%s
-            """,
-            (treatment_id, current_user["id"]),
-        )
+
+        if has_permission(current_user["id"], "view_all_projects"):
+
+            cursor.execute("""
+                SELECT id,project_id
+                FROM treatments
+                WHERE id=%s
+            """, (treatment_id,))
+
+        else:
+
+            cursor.execute("""
+                SELECT id,project_id
+                FROM treatments
+                WHERE id=%s
+                AND created_by=%s
+            """, (
+                treatment_id,
+                current_user["id"],
+            ))
+
         treatment = cursor.fetchone()
 
         if not treatment:
@@ -144,43 +221,45 @@ def update_treatment(
                 detail="You can edit only your own treatment"
             )
 
-        cursor.execute(
-            """
-            SELECT id FROM treatments
-            WHERE project_id=%s AND treatment_code=%s AND id != %s
-            """,
-            (
-                treatment["project_id"],
-                payload.treatment_code,
-                treatment_id,
-            ),
-        )
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Treatment code already exists")
+        cursor.execute("""
+            SELECT id
+            FROM treatments
+            WHERE project_id=%s
+            AND treatment_code=%s
+            AND id<>%s
+        """, (
+            treatment["project_id"],
+            payload.treatment_code,
+            treatment_id,
+        ))
 
-        cursor.execute(
-            """
+        if cursor.fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail="Treatment code already exists"
+            )
+
+        cursor.execute("""
             UPDATE treatments
-            SET treatment_code=%s,
+            SET
+                treatment_code=%s,
                 treatment_name=%s,
                 description=%s,
                 status=%s
             WHERE id=%s
-            """,
-            (
-                payload.treatment_code,
-                payload.treatment_name,
-                payload.description,
-                payload.status,
-                treatment_id,
-            ),
-        )
+        """, (
+            payload.treatment_code,
+            payload.treatment_name,
+            payload.description,
+            payload.status,
+            treatment_id,
+        ))
 
         db.commit()
 
         return {
             "message": "Treatment updated",
-            "treatment_id": treatment_id
+            "treatment_id": treatment_id,
         }
 
     except Exception:
@@ -195,20 +274,32 @@ def update_treatment(
 @router.delete("/{treatment_id}")
 def delete_treatment(
     treatment_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_projects")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     try:
-        cursor.execute(
-            """
-            SELECT id
-            FROM treatments
-            WHERE id=%s AND created_by=%s
-            """,
-            (treatment_id, current_user["id"]),
-        )
+
+        if has_permission(current_user["id"], "view_all_projects"):
+
+            cursor.execute("""
+                SELECT id
+                FROM treatments
+                WHERE id=%s
+            """, (treatment_id,))
+
+        else:
+
+            cursor.execute("""
+                SELECT id
+                FROM treatments
+                WHERE id=%s
+                AND created_by=%s
+            """, (
+                treatment_id,
+                current_user["id"],
+            ))
 
         if not cursor.fetchone():
             raise HTTPException(
@@ -225,7 +316,7 @@ def delete_treatment(
 
         return {
             "message": "Treatment deleted",
-            "treatment_id": treatment_id
+            "treatment_id": treatment_id,
         }
 
     except Exception:
