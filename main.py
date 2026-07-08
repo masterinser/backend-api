@@ -337,8 +337,6 @@ def get_user_profile(user_id: int, current_user: dict = Depends(get_current_user
 # roles
 # ========================
 
-from routers.permissions import router as permissions_router
-app.include_router(permissions_router)
 
 def has_permission(user_id: int, permission_key: str):
     db = get_db()
@@ -772,6 +770,10 @@ app.include_router(observations_router)
 
 from routers.measurements import router as measurements_router
 app.include_router(measurements_router)
+
+from routers.permissions import router as permissions_router
+app.include_router(permissions_router)
+
 
 # ========================
 # Run local:
