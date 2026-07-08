@@ -1,7 +1,8 @@
+import math
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from main import get_db, require_permission, has_permission
+from main import get_db, get_current_user, require_permission, has_permission
 
 
 router = APIRouter(
@@ -354,6 +355,161 @@ def get_measurement_raw_data(
 
             row["count"] = len(nums)
             row["average"] = round(sum(nums) / len(nums), 2) if nums else None
+
+        return {
+            "observation": observation,
+            "rows": rows,
+            "total_plots": len(rows),
+        }
+
+    finally:
+        cursor.close()
+        db.close()
+
+
+@router.get("/statistics")
+def get_measurement_statistics(
+    observation_id: int,
+    current_user: dict = Depends(require_permission("manage_measurements")),
+):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        # ตรวจสอบสิทธิ์เหมือน API อื่น
+        if has_permission(current_user["id"], "view_all_projects"):
+            cursor.execute("""
+                SELECT
+                    o.id AS observation_id,
+                    o.trial_id,
+                    o.observation_name,
+                    o.observation_code,
+                    o.unit,
+                    o.daa,
+                    o.observation_date
+                FROM observations o
+                WHERE o.id=%s
+            """, (observation_id,))
+        else:
+            cursor.execute("""
+                SELECT
+                    o.id AS observation_id,
+                    o.trial_id,
+                    o.observation_name,
+                    o.observation_code,
+                    o.unit,
+                    o.daa,
+                    o.observation_date
+                FROM observations o
+                INNER JOIN trials t ON t.id=o.trial_id
+                INNER JOIN projects p ON p.id=t.project_id
+                WHERE o.id=%s
+                AND p.created_by=%s
+            """, (
+                observation_id,
+                current_user["id"],
+            ))
+
+        observation = cursor.fetchone()
+
+        if not observation:
+            raise HTTPException(
+                status_code=404,
+                detail="Observation not found"
+            )
+
+        cursor.execute("""
+            SELECT
+                p.id AS plot_id,
+                p.plot_no,
+                p.rep,
+                p.treatment,
+                p.variety,
+                m.value_decimal
+            FROM plots p
+            LEFT JOIN measurements m
+                ON p.id = m.plot_id
+                AND m.observation_id = %s
+            WHERE p.trial_id=%s
+            ORDER BY p.plot_no ASC
+        """, (
+            observation_id,
+            observation["trial_id"],
+        ))
+
+        data = cursor.fetchall()
+
+        rows_dict = {}
+
+        for item in data:
+            plot_id = item["plot_id"]
+
+            if plot_id not in rows_dict:
+                rows_dict[plot_id] = {
+                    "plot_id": plot_id,
+                    "plot_no": item["plot_no"],
+                    "rep": item["rep"],
+                    "treatment": item["treatment"],
+                    "variety": item["variety"],
+                    "values": [],
+                }
+
+            if item["value_decimal"] is not None:
+                rows_dict[plot_id]["values"].append(
+                    float(item["value_decimal"])
+                )
+
+        rows = []
+
+        for row in rows_dict.values():
+
+            values = row["values"]
+            count = len(values)
+
+            if count == 0:
+                mean = None
+                sd = None
+                cv = None
+                min_value = None
+                max_value = None
+
+            else:
+                mean_value = sum(values) / count
+
+                if count > 1:
+                    variance = sum(
+                        (x - mean_value) ** 2 for x in values
+                    ) / (count - 1)
+
+                    sd_value = math.sqrt(variance)
+                else:
+                    sd_value = 0
+
+                cv_value = (
+                    (sd_value / mean_value) * 100
+                    if mean_value != 0
+                    else 0
+                )
+
+                mean = round(mean_value, 2)
+                sd = round(sd_value, 2)
+                cv = round(cv_value, 2)
+                min_value = round(min(values), 2)
+                max_value = round(max(values), 2)
+
+            rows.append({
+                "plot_id": row["plot_id"],
+                "plot_no": row["plot_no"],
+                "rep": row["rep"],
+                "treatment": row["treatment"],
+                "variety": row["variety"],
+                "count": count,
+                "mean": mean,
+                "sd": sd,
+                "cv": cv,
+                "min": min_value,
+                "max": max_value,
+            })
 
         return {
             "observation": observation,
