@@ -34,9 +34,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "180"
 
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS",
+    "https://corteva.found-express.com,"
     "http://localhost:3000,"
-    "http://localhost:5173,"
-    "https://corteva.found-express.com"
+    "http://localhost:5173"
 ).split(",")
 
 # ========================
@@ -61,7 +61,11 @@ app = FastAPI(title="Backend API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in FRONTEND_ORIGINS if origin.strip()],
+    allow_origins=[
+        origin.strip()
+        for origin in FRONTEND_ORIGINS
+        if origin.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
