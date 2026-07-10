@@ -34,7 +34,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "180"
 
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS",
-    "http://localhost:3000,http://localhost:5173"
+    "http://localhost:3000,"
+    "http://localhost:5173,"
+    "https://corteva.found-express.com"
 ).split(",")
 
 # ========================
@@ -282,21 +284,28 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
             }
         )
 
+        # ดึง Permission ของผู้ใช้
+        permissions = get_user_permissions(user["id"])
+
         return {
             "access_token": access_token,
             "token_type": "bearer",
             "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
+
             "user_id": user["id"],
             "username": user["username"],
             "email": user["email"],
+
             "role_id": user["role_id"],
             "role_name": user["role_name"],
+
+            # ส่ง permission ทั้งหมดที่ผู้ใช้มี
+            **permissions,
         }
 
     finally:
         cursor.close()
         db.close()
-
 
 @app.get("/me", tags=["Auth"])
 def me(current_user: dict = Depends(get_current_user)):
@@ -356,6 +365,33 @@ def has_permission(user_id: int, permission_key: str):
         )
 
         return cursor.fetchone() is not None
+
+    finally:
+        cursor.close()
+        db.close()
+
+
+def get_user_permissions(user_id: int):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT p.permission_key
+            FROM users u
+            JOIN role_permissions rp ON u.role_id = rp.role_id
+            JOIN permissions p ON rp.permission_id = p.id
+            WHERE u.id=%s
+        """, (user_id,))
+
+        rows = cursor.fetchall()
+
+        permissions = {}
+
+        for row in rows:
+            permissions[row["permission_key"]] = 1
+
+        return permissions
 
     finally:
         cursor.close()
