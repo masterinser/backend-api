@@ -34,9 +34,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "180"
 
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS",
-    "https://corteva.found-express.com,"
     "http://localhost:3000,"
-    "http://localhost:5173"
+    "http://localhost:5173,"
+    "https://cortava.found-express.com"
 ).split(",")
 
 # ========================
