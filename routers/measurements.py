@@ -72,7 +72,6 @@ def get_measurement_template(
         cursor.close()
         db.close()
 
-
 @router.post("/save-grid")
 def save_measurement_grid(
     payload: MeasurementSaveGrid,
@@ -95,21 +94,31 @@ def save_measurement_grid(
                 INNER JOIN projects p ON p.id=t.project_id
                 WHERE o.id=%s
                 AND p.created_by=%s
-            """, (payload.observation_id, current_user["id"]))
+            """, (
+                payload.observation_id,
+                current_user["id"],
+            ))
 
         observation = cursor.fetchone()
 
         if not observation:
-            raise HTTPException(status_code=404, detail="Observation not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Observation not found"
+            )
 
         for row in payload.rows:
+
             if has_permission(current_user["id"], "view_all_projects"):
                 cursor.execute("""
                     SELECT id
                     FROM plots
                     WHERE id=%s
                     AND trial_id=%s
-                """, (row.plot_id, observation["trial_id"]))
+                """, (
+                    row.plot_id,
+                    observation["trial_id"],
+                ))
             else:
                 cursor.execute("""
                     SELECT pl.id
@@ -131,11 +140,32 @@ def save_measurement_grid(
                     detail=f"Plot id {row.plot_id} not found"
                 )
 
+            # ⭐ ลบ Sample ที่เกินจำนวนใหม่
+            cursor.execute("""
+                DELETE FROM measurements
+                WHERE observation_id=%s
+                AND plot_id=%s
+                AND sample_no > %s
+            """, (
+                payload.observation_id,
+                row.plot_id,
+                len(row.values),
+            ))
+
+            # บันทึกข้อมูลใหม่
             for index, value in enumerate(row.values, start=1):
+
                 cursor.execute("""
                     INSERT INTO measurements
-                    (observation_id, plot_id, sample_no, value_decimal, created_by)
-                    VALUES (%s, %s, %s, %s, %s)
+                    (
+                        observation_id,
+                        plot_id,
+                        sample_no,
+                        value_decimal,
+                        created_by
+                    )
+                    VALUES
+                    (%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE
                         value_decimal=VALUES(value_decimal),
                         updated_at=CURRENT_TIMESTAMP
