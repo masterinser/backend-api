@@ -10,7 +10,6 @@ import mysql.connector
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -30,21 +29,43 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_NAME = os.getenv("DB_NAME", "backend_db")
 DB_PORT = int(os.getenv("DB_PORT", "3306"))
 
-SECRET_KEY = os.getenv("SECRET_KEY", "please_change_this_secret_key")
+SECRET_KEY = os.getenv("SECRET_KEY", "")
+if not SECRET_KEY:
+    # ห้ามรันด้วย secret ค่า default บน production
+    if os.getenv("RAILWAY_ENVIRONMENT"):
+        raise RuntimeError("SECRET_KEY is not set")
+    SECRET_KEY = "dev_only_secret_key_change_me"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 180
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "180"))
 
-FRONTEND_ORIGINS = os.getenv(
-    "FRONTEND_ORIGINS",
-    "http://localhost:3000,"
-    "http://localhost:5173,"
-    "https://cortava.found-express.com"
-).split(",")
+FRONTEND_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "FRONTEND_ORIGINS",
+        "http://localhost:3000,"
+        "http://localhost:5173,"
+        "https://cortava.found-express.com"
+    ).split(",")
+    if origin.strip()
+]
+
+# อนุญาตทุก subdomain ของ Railway (เช่น https://xxx.up.railway.app) ปิดได้ด้วย CORS_ALLOW_RAILWAY=0
+CORS_ORIGIN_REGEX = (
+    r"https://.*\.up\.railway\.app"
+    if os.getenv("CORS_ALLOW_RAILWAY", "1") == "1"
+    else None
+)
 
 # ========================
 # FTP image
 # ========================
-FTP_HOST = os.getenv("FTP_HOST")
+FTP_HOST = (os.getenv("FTP_HOST") or "").strip()
+# ftplib ต้องการแค่ hostname เช่น 153.92.8.145 (ไม่ต้องมี ftp://)
+for _prefix in ("ftp://", "ftps://"):
+    if FTP_HOST.lower().startswith(_prefix):
+        FTP_HOST = FTP_HOST[len(_prefix):]
+FTP_HOST = FTP_HOST.strip("/")
+FTP_PORT = int(os.getenv("FTP_PORT", "21"))
 FTP_USER = os.getenv("FTP_USER")
 FTP_PASSWORD = os.getenv("FTP_PASSWORD")
 FTP_UPLOAD_BASE_DIR = os.getenv("FTP_UPLOAD_BASE_DIR")
@@ -63,11 +84,8 @@ app = FastAPI(title="Backend API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        origin.strip()
-        for origin in FRONTEND_ORIGINS
-        if origin.strip()
-    ],
+    allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,14 +97,18 @@ app.add_middleware(
 # DB
 # ========================
 def get_db():
-    db = mysql.connector.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        autocommit=False,
-    )
+    try:
+        db = mysql.connector.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME,
+            autocommit=False,
+            connection_timeout=10,
+        )
+    except mysql.connector.Error as e:
+        raise HTTPException(status_code=503, detail=f"Database connection failed: {e.msg}")
     return db
 
 # ========================
@@ -180,7 +202,9 @@ def save_image_to_ftp(file: UploadFile):
         raise HTTPException(status_code=500, detail="FTP config is missing")
 
     month_folder = datetime.now().strftime("%Y-%m")
-    file_ext = file.filename.split(".")[-1].lower()
+    file_ext = (file.filename or "image.jpg").rsplit(".", 1)[-1].lower()
+    if file_ext not in ("jpg", "jpeg", "png", "webp"):
+        file_ext = "jpg"
     unique_name = str(uuid.uuid4())[:8] + "." + file_ext
 
     ftp_folder = f"{FTP_UPLOAD_BASE_DIR}/{month_folder}"
@@ -191,7 +215,8 @@ def save_image_to_ftp(file: UploadFile):
         temp_path = tmp.name
 
     try:
-        ftp = FTP(FTP_HOST, timeout=30)
+        ftp = FTP(timeout=30)
+        ftp.connect(FTP_HOST, FTP_PORT)
         ftp.login(FTP_USER, FTP_PASSWORD)
 
         ensure_ftp_dir(ftp, ftp_folder)
@@ -201,6 +226,8 @@ def save_image_to_ftp(file: UploadFile):
 
         ftp.quit()
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"FTP upload failed: {str(e)}")
 
@@ -246,6 +273,19 @@ def root():
 @app.get("/health", tags=["Root"])
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/db", tags=["Root"])
+def health_db():
+    db = get_db()
+    try:
+        cursor = db.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchall()
+        cursor.close()
+        return {"status": "ok", "database": "connected"}
+    finally:
+        db.close()
 
 # ========================
 # Auth
@@ -322,6 +362,9 @@ def me(current_user: dict = Depends(get_current_user)):
 # ========================
 @app.get("/users/{user_id}/profile", tags=["Manage Users & Profile"])
 def get_user_profile(user_id: int, current_user: dict = Depends(get_current_user)):
+    if current_user["id"] != user_id and not has_permission(current_user["id"], "manage_users"):
+        raise HTTPException(status_code=403, detail="Permission denied: manage_users")
+
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
@@ -652,7 +695,7 @@ def create_person(
             raise HTTPException(status_code=400, detail="Profile already exists")
 
         image_path = None
-        if profile_image:
+        if profile_image and profile_image.filename:
             image_path = save_image_to_ftp(profile_image)
 
         sql = """
@@ -716,7 +759,7 @@ def update_person(
 
         image_path = person["profile_image"]
 
-        if profile_image:
+        if profile_image and profile_image.filename:
             image_path = save_image_to_ftp(profile_image)
 
         sql = """

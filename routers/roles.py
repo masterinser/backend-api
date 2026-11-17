@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from main import get_db, get_current_user
+from main import get_db, get_current_user, require_permission
 
 router = APIRouter(
     prefix="/roles",
@@ -40,7 +40,7 @@ def get_roles(current_user: dict = Depends(get_current_user)):
 @router.post("")
 def create_role(
     payload: RoleCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_roles")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -82,7 +82,7 @@ def create_role(
 def update_role(
     role_id: int,
     payload: RoleUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_roles")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -131,7 +131,7 @@ def update_role(
 @router.delete("/{role_id}")
 def delete_role(
     role_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_permission("manage_roles")),
 ):
     db = get_db()
     cursor = db.cursor(dictionary=True)
